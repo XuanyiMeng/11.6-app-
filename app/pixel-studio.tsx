@@ -1,0 +1,46 @@
+'use client';
+import { useEffect,useRef,useState,type RefObject,type PointerEvent } from 'react';
+import { createPixelRenderer,emptyPixelState,pixelSprite,PIXEL_ITEMS,pullFace,type PixelState,type PixelSticker } from '../lib/pixel-play';
+type Props={video:RefObject<HTMLVideoElement|null>;ready:boolean;busy:boolean;state:PixelState;onChange:(state:PixelState)=>void};
+export default function PixelStudio(props:Props){
+ const latest=useRef(props);latest.current=props;
+ const canvas=useRef<HTMLCanvasElement>(null),stage=useRef<HTMLDivElement>(null),nextId=useRef(Math.max(0,...props.state.stickers.map(s=>s.id))+1);
+ const [mode,setMode]=useState<'warp'|'stickers'>('warp'),[radius,setRadius]=useState(.2),[selected,setSelected]=useState<number|null>(null),[history,setHistory]=useState<Float32Array[]>([]),[note,setNote]=useState('');
+ const points=useRef(new Map<number,{x:number;y:number}>());
+ const gesture=useRef<{x:number;y:number;distance:number;sticker?:PixelSticker;resize:boolean}|null>(null);
+ useEffect(()=>{
+  const renderer=createPixelRenderer(480,360);let frame=0,last=0;
+  const fallback=document.createElement('canvas');fallback.width=480;fallback.height=360;const fc=fallback.getContext('2d')!;fc.fillStyle='#1d1022';fc.fillRect(0,0,480,360);
+  function paint(time:number){const p=latest.current,v=p.video.current,ctx=canvas.current?.getContext('2d');if(ctx&&time-last>50){renderer.render(ctx,p.ready&&v&&v.readyState>=2?v:fallback,p.ready&&v?v.videoWidth:480,p.ready&&v?v.videoHeight:360,p.state,p.ready);last=time;}frame=requestAnimationFrame(paint);}
+  frame=requestAnimationFrame(paint);return()=>{cancelAnimationFrame(frame);renderer.dispose();};
+ },[]);
+ function position(event:PointerEvent<HTMLDivElement>){const rect=event.currentTarget.getBoundingClientRect();return{x:(event.clientX-rect.left)/rect.width,y:(event.clientY-rect.top)/rect.height};}
+ function begin(resize=false){const p=[...points.current.values()],s=latest.current.state.stickers.find(s=>s.id===selected);if(!p.length){gesture.current=null;return;}gesture.current={x:p.reduce((a,b)=>a+b.x,0)/p.length,y:p.reduce((a,b)=>a+b.y,0)/p.length,distance:p.length>1?Math.hypot(p[1].x-p[0].x,(p[1].y-p[0].y)*.75):1,sticker:s?{...s}:undefined,resize};}
+ function down(event:PointerEvent<HTMLDivElement>){if(props.busy)return;event.preventDefault();event.currentTarget.setPointerCapture(event.pointerId);const p=position(event);points.current.set(event.pointerId,p);
+  if(mode==='warp'){if(points.current.size===1)setHistory(h=>[...h.slice(-19),new Float32Array(props.state.field)]);gesture.current={...p,distance:1,resize:false};}
+  else{const hit=[...props.state.stickers].reverse().find(s=>Math.abs(p.x-s.x)<s.size/2&&Math.abs(p.y-s.y)<s.size*4/3/2);if(hit){setSelected(hit.id);const list=[...points.current.values()];gesture.current={x:list.reduce((a,b)=>a+b.x,0)/list.length,y:list.reduce((a,b)=>a+b.y,0)/list.length,distance:list.length>1?Math.hypot(list[1].x-list[0].x,(list[1].y-list[0].y)*.75):1,sticker:{...hit},resize:!!(event.target as HTMLElement).closest('[data-pixel-resize]')};}else if(points.current.size>1)begin();else{setSelected(null);gesture.current=null;}}
+ }
+ function move(event:PointerEvent<HTMLDivElement>){if(props.busy||!points.current.has(event.pointerId)||!gesture.current)return;const p=position(event),g=gesture.current;points.current.set(event.pointerId,p);
+  if(mode==='warp'){const dx=p.x-g.x,dy=p.y-g.y;if(Math.hypot(dx,dy)>.0005){const field=pullFace(latest.current.state.field,p.x,p.y,dx,dy,radius);props.onChange({...latest.current.state,field});latest.current={...latest.current,state:{...latest.current.state,field}};gesture.current={...g,...p};}}
+  else if(g.sticker){const all=[...points.current.values()],x=all.reduce((a,b)=>a+b.x,0)/all.length,y=all.reduce((a,b)=>a+b.y,0)/all.length;const size=g.resize?g.sticker.size+(x-g.x)*2:all.length>1?g.sticker.size*Math.hypot(all[1].x-all[0].x,(all[1].y-all[0].y)*.75)/Math.max(.01,g.distance):g.sticker.size;const updated={...g.sticker,x:Math.max(0,Math.min(1,g.sticker.x+(g.resize?0:x-g.x))),y:Math.max(0,Math.min(1,g.sticker.y+(g.resize?0:y-g.y))),size:Math.max(.06,Math.min(.8,size))};props.onChange({...latest.current.state,stickers:latest.current.state.stickers.map(s=>s.id===updated.id?updated:s)});}
+ }
+ function up(event:PointerEvent<HTMLDivElement>){points.current.delete(event.pointerId);begin();}
+ const active=props.state.stickers.find(s=>s.id===selected);
+ function updateSticker(update:Partial<PixelSticker>){if(!active||props.busy)return;props.onChange({...props.state,stickers:props.state.stickers.map(s=>s.id===active.id?{...s,...update}:s)});}
+ return <div className="pixel-studio">
+  <div className={`pixel-stage mode-${mode}`} ref={stage} role="group" tabIndex={0} aria-label="Drag your face to reshape it. In sticker mode, drag or pinch a selected sticker." onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up} onLostPointerCapture={up} onKeyDown={event=>{if(!active||mode!=='stickers'||props.busy)return;let update:Partial<PixelSticker>={};if(event.key==='ArrowLeft')update={x:Math.max(0,active.x-.02)};else if(event.key==='ArrowRight')update={x:Math.min(1,active.x+.02)};else if(event.key==='ArrowUp')update={y:Math.max(0,active.y-.02)};else if(event.key==='ArrowDown')update={y:Math.min(1,active.y+.02)};else if(event.key==='Delete'||event.key==='Backspace'){props.onChange({...props.state,stickers:props.state.stickers.filter(s=>s.id!==selected)});event.preventDefault();return;}else return;event.preventDefault();updateSticker(update);}}>
+   <canvas ref={canvas} width={480} height={360} aria-label="Live face-warp and pixel-sticker preview"/>
+   {mode==='stickers'&&active&&!props.busy&&<div className="pixel-selection" style={{left:`${(active.x-active.size/2)*100}%`,top:`${(active.y-active.size*2/3)*100}%`,width:`${active.size*100}%`,height:`${active.size*4/3*100}%`}}><span data-pixel-resize className="pixel-resize">↘</span></div>}
+   <span className="pixel-mode-badge glitter-text">{mode==='warp'?'DRAG TO WARP':'DRAG · PINCH · PLAY'}</span>
+  </div>
+  <div className="pixel-tools">
+   <div className="pixel-mode-row"><button disabled={props.busy} aria-pressed={mode==='warp'} onClick={()=>{setMode('warp');points.current.clear();gesture.current=null;}}><span className="glitter-text">✥ Face warp</span></button><button disabled={props.busy} aria-pressed={mode==='stickers'} onClick={()=>setMode('stickers')}><span className="glitter-text">▦ Pixel pals</span></button><button disabled={props.busy} onClick={()=>{props.onChange(emptyPixelState());setHistory([]);setSelected(null);setNote('');}} aria-label="Reset face and all stickers"><span className="glitter-text">Reset all</span></button></div>
+   {mode==='warp'?<><label className="pixel-range"><span className="glitter-text">Brush size</span><input aria-label="Face warp brush size" type="range" min="8" max="42" value={Math.round(radius*100)} disabled={props.busy} onChange={e=>setRadius(Number(e.target.value)/100)}/><span className="glitter-text">{Math.round(radius*100)}%</span></label><div className="pixel-undo-row"><span className="glitter-text">HOLD STILL. DRAG YOUR FACE.</span><button disabled={props.busy||!history.length} onClick={()=>{const prior=history[history.length-1];if(prior){props.onChange({...props.state,field:new Float32Array(prior)});setHistory(h=>h.slice(0,-1));}}}><span className="glitter-text">Undo</span></button><button disabled={props.busy} onClick={()=>{props.onChange({...props.state,field:emptyPixelState().field});setHistory([]);}}><span className="glitter-text">Reset face</span></button></div></>:<>
+   <div className="pixel-palette" role="group" aria-label="Add a pixel pal">{PIXEL_ITEMS.map(item=><button key={item.kind} disabled={props.busy} aria-label={`Add ${item.name}`} onClick={()=>{if(props.state.stickers.length>=12){setNote('12 pals max. Remove one to add another.');return;}const sticker={id:nextId.current++,kind:item.kind,x:.3+(props.state.stickers.length%3)*.2,y:.3+Math.floor(props.state.stickers.length%6/3)*.35,size:.2};props.onChange({...props.state,stickers:[...props.state.stickers,sticker]});setSelected(sticker.id);setNote('');}}><PixelIcon kind={item.kind}/><span className="glitter-text">{item.name}</span></button>)}</div>
+   {active?<label className="pixel-range"><span className="glitter-text">Pal size</span><input aria-label="Selected sticker size" type="range" min="6" max="80" value={Math.round(active.size*100)} disabled={props.busy} onChange={e=>updateSticker({size:Number(e.target.value)/100})}/><button disabled={props.busy} onClick={()=>{props.onChange({...props.state,stickers:props.state.stickers.filter(s=>s.id!==selected)});setSelected(null);setNote('');}}><span className="glitter-text">Remove</span></button></label>:<p className="pixel-hint glitter-text">ADD A PAL. DRAG IT ANYWHERE. PINCH TO RESIZE.</p>}
+   </>}
+   {note&&<p className="pixel-hint glitter-text" role="status">{note}</p>}
+  </div>
+ </div>;
+}
+function PixelIcon({kind}:{kind:import('../lib/pixel-play').PixelKind}){const ref=useRef<HTMLCanvasElement>(null);useEffect(()=>{ref.current?.getContext('2d')?.drawImage(pixelSprite(kind),0,0);},[kind]);return <canvas ref={ref} width={32} height={32} aria-hidden="true"/>;}
